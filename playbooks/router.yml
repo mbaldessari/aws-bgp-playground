@@ -22,6 +22,7 @@
         --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
         --output text
       register: test_client_ec2_ami_image_id_raw
+      changed_when: false
 
     - name: Set ami image fact
       ansible.builtin.set_fact:
@@ -38,7 +39,8 @@
         name: "{{ test_client_ec2_ssh_key_name }}"
         key_material: "{{ ssh_pubkey }}"
 
-    - ansible.builtin.include_tasks: network_task.yml
+    - name: Configure networking for hub and spoke clusters
+      ansible.builtin.include_tasks: network_task.yml
       loop:
         - { name: "hub", config: "{{ HUBCONFIG }}", cluster_name: "{{ hub_cluster_name }}" }
         - { name: "spoke", config: "{{ SPOKECONFIG }}", cluster_name: "{{ spoke_cluster_name }}" }
@@ -155,13 +157,13 @@
         source_dest_check: false
         delete_on_termination: true
       vars:
-        eni_id: "{{ eni_created.interface.id if (ec2_eni_info_raw['network_interfaces'] | length == 0) else ec2_eni_info_raw['network_interfaces'][0]['id']  }}"
+        eni_id: "{{ eni_created.interface.id if (ec2_eni_info_raw['network_interfaces'] | length == 0) else ec2_eni_info_raw['network_interfaces'][0]['id'] }}"
 
     - name: Fetch client ec2
       amazon.aws.ec2_instance_info:
         region: "{{ aws_region }}"
         instance_ids:
-        - "{{ client_instance_id }}"
+          - "{{ client_instance_id }}"
       register: ec2_info
 
     - name: Find network interfaces for each subnet
@@ -211,58 +213,59 @@
       become: true
       delegate_to: "{{ fqdn_nodot }}"
       block:
-      - name: Set hostname on {{ fqdn }}
-        ansible.builtin.hostname:
-          name: "test-client-{{ hub_cluster_name }}"
-          use: systemd
+        - name: Set hostname on {{ fqdn }}
+          ansible.builtin.hostname:
+            name: "test-client-{{ hub_cluster_name }}"
+            use: systemd
 
-      - name: Ensure packages are installed on client {{ fqdn_nodot }}
-        ansible.builtin.dnf:
-          name:
-          - frr
-          state: present
-          update_cache: yes
-    
-      - name: Create frr config on client {{ fqdn_nodot }}
-        ansible.builtin.template:
-          src: ../templates/frr.conf.j2
-          dest: /etc/frr/frr.conf
-        vars:
-          asn: "{{ metallb_client_side_asn }}"
-          bgp_neighbors:
-            tor:
-              - "{{ hub_frr_private_ip }}"
-              - "{{ spoke_frr_private_ip }}"
-          bfd_localaddresses:
-            tor:
-              - "{{ client_hub_private_ip }}"
-              - "{{ client_spoke_private_ip }}"
-          peer_asns:
-            tor: "{{ metallb_aws_side_asn }}"
-          is_tor: false
-    
-      - name: Create frr daemons config on client {{ fqdn_nodot }}
-        ansible.builtin.template:
-          src: ../templates/daemons.j2
-          dest: /etc/frr/daemons
-    
-      - name: Create vtysh config on client {{ fqdn_nodot }}
-        ansible.builtin.template:
-          src: ../templates/vtysh.conf.j2
-          dest: /etc/frr/vtysh.conf
-    
-      - name: "Enable and start the frr Service"
-        ansible.builtin.service:
-          name: frr
-          enabled: true
-          state: restarted
+        - name: Ensure packages are installed on client {{ fqdn_nodot }}
+          ansible.builtin.dnf:
+            name:
+              - frr
+            state: present
+            update_cache: true
+        - name: Create frr config on client {{ fqdn_nodot }}
+          ansible.builtin.template:
+            src: ../templates/frr.conf.j2
+            dest: /etc/frr/frr.conf
+            mode: '0644'
+          vars:
+            asn: "{{ metallb_client_side_asn }}"
+            bgp_neighbors:
+              tor:
+                - "{{ hub_frr_private_ip }}"
+                - "{{ spoke_frr_private_ip }}"
+            bfd_localaddresses:
+              tor:
+                - "{{ client_hub_private_ip }}"
+                - "{{ client_spoke_private_ip }}"
+            peer_asns:
+              tor: "{{ metallb_aws_side_asn }}"
+            is_tor: false
 
+        - name: Create frr daemons config on client {{ fqdn_nodot }}
+          ansible.builtin.template:
+            src: ../templates/daemons.j2
+            dest: /etc/frr/daemons
+            mode: '0644'
+
+        - name: Create vtysh config on client {{ fqdn_nodot }}
+          ansible.builtin.template:
+            src: ../templates/vtysh.conf.j2
+            dest: /etc/frr/vtysh.conf
+            mode: '0644'
+
+        - name: "Enable and start the frr Service"
+          ansible.builtin.service:
+            name: frr
+            enabled: true
+            state: restarted
 
   handlers:
-  - name: Restart frr on frr nodes
-    ansible.builtin.service:
-      name: frr
-      state: restarted
-    delegate_to: "{{ item }}"
-    become: true
-    loop: "{{ groups['frr_node'] }}"
+    - name: Restart frr on frr nodes
+      ansible.builtin.service:
+        name: frr
+        state: restarted
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['frr_node'] }}"

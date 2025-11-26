@@ -25,4 +25,4 @@
         msg: "HUBCONFIG: {{ HUBCONFIG }} - SPOKECONFIG: {{ SPOKECONFIG }}"
 
   roles:
-    - ../roles/acm_import
+    - acm_import
